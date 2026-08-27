@@ -12,6 +12,9 @@ neighbour encoder, the CCA blocks, and the gates.
 > path is covered by tests on a software Vulkan device. The neighbour
 > encoder's treatment of `[MASK]`-bearing queries is still the open research
 > question — see [`docs/roadmap.md`](docs/roadmap.md).
+>
+> The route to a first trustworthy result — training workflow, datasets,
+> and the evaluation protocol — is in [`docs/v0-plan.md`](docs/v0-plan.md).
 
 ## Why diffusion changes the retrieval story
 
