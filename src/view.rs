@@ -47,6 +47,29 @@ impl ViewId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaskToken(pub u32);
 
+/// Identifies one clean sequence.
+///
+/// Paired with [`NoisedView::source`], this lets the loss builder verify that
+/// the targets it is about to write came from the sequence the view was
+/// actually masked from. Mismatching them is the mirror image of the leak
+/// this module prevents: not the retriever seeing too much, but the loss
+/// scoring against the wrong answers — equally silent, and it also just
+/// looks like a model that will not converge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SequenceId(u64);
+
+impl SequenceId {
+    fn next() -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// The raw id, for logging.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// `x_0` — the clean sequence.
 ///
 /// Deliberately inert. It is a denoising *target* and nothing else: there is
@@ -55,13 +78,22 @@ pub struct MaskToken(pub u32);
 /// which is what the loss builder consumes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanSequence {
+    id: SequenceId,
     tokens: Vec<u32>,
 }
 
 impl CleanSequence {
     /// Wrap a clean token sequence.
     pub fn new(tokens: Vec<u32>) -> Self {
-        Self { tokens }
+        Self {
+            id: SequenceId::next(),
+            tokens,
+        }
+    }
+
+    /// This sequence's identity.
+    pub fn id(&self) -> SequenceId {
+        self.id
     }
 
     /// Sequence length.
@@ -105,6 +137,7 @@ impl CleanSequence {
         }
         NoisedView {
             id: ViewId::next(),
+            source: Some(self.id),
             tokens,
             masked,
             t,
@@ -121,6 +154,7 @@ impl CleanSequence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoisedView {
     id: ViewId,
+    source: Option<SequenceId>,
     tokens: Vec<u32>,
     masked: Vec<bool>,
     t: NoiseLevel,
@@ -136,6 +170,7 @@ impl NoisedView {
         let masked = tokens.iter().map(|&tok| tok == mask_token.0).collect();
         Self {
             id: ViewId::next(),
+            source: None,
             tokens,
             masked,
             t,
@@ -147,6 +182,7 @@ impl NoisedView {
     pub fn all_masked(n: usize, mask_token: MaskToken) -> Self {
         Self {
             id: ViewId::next(),
+            source: None,
             tokens: vec![mask_token.0; n],
             masked: vec![true; n],
             t: NoiseLevel::MASKED,
@@ -157,6 +193,17 @@ impl NoisedView {
     /// This view's identity.
     pub fn id(&self) -> ViewId {
         self.id
+    }
+
+    /// The clean sequence this view was masked from, when there is one.
+    ///
+    /// `None` for a view built by [`NoisedView::from_tokens`] or
+    /// [`NoisedView::all_masked`] — sampling starts from a canvas, not from a
+    /// held-out answer, so there is nothing to score against and nothing to
+    /// leak. Revealing preserves it, so a sampling trajectory seeded from a
+    /// masked training sequence stays attributable to it.
+    pub fn source(&self) -> Option<SequenceId> {
+        self.source
     }
 
     /// The visible tokens, masked positions included as `[MASK]`.
@@ -224,6 +271,7 @@ impl NoisedView {
         }
         Self {
             id: ViewId::next(),
+            source: self.source,
             tokens,
             masked,
             t,

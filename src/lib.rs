@@ -59,15 +59,21 @@
 
 pub mod chunk;
 pub mod config;
+pub mod corpus;
+pub mod loss;
 pub mod model;
 pub mod retrieval;
 pub mod sample;
 pub mod schedule;
+pub mod train;
 pub mod view;
 
 pub use chunk::{ChunkAdmission, ChunkQueries, ChunkedView, RetrieverEncode, chunk_queries};
 pub use config::{CcaConfig, ConfigError};
+pub use corpus::{ChunkEmbedder, Document, HashedBagEmbedder, TrainingSequence};
+pub use loss::{LabelStats, MaskedDiffusionLoss};
 pub use model::{CcaInsertion, CcaModel, ModelConfig, NeighbourInput};
 pub use retrieval::{Neighbours, retrieve};
 pub use schedule::{NoiseLevel, Phase, RefreshSchedule, retrieve_now, trajectory};
-pub use view::{CleanSequence, MaskToken, NoisedView, ViewId};
+pub use train::{RetrievalSources, StepReport, Trainer, TrainingConfig};
+pub use view::{CleanSequence, MaskToken, NoisedView, SequenceId, ViewId};
