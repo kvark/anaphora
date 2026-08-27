@@ -306,3 +306,85 @@ fn zero_init_gate_still_learns() {
         "gate gradient must be finite"
     );
 }
+
+#[test]
+fn neighbour_content_changes_the_output() {
+    // Guards against a vacuous pass of the identity tests above. If the
+    // neighbour block were disconnected from the logits, "the CCA block is
+    // the identity at init" would hold for the wrong reason, and every
+    // retrieval measurement downstream would be reading a constant.
+    let (g, _model) = build_model(GateActivation::Tanh);
+    let mut session = meganeura::build(&g, meganeura::SessionConfig::inference_from_env()).0;
+    fill_params(&mut session);
+    // Deliberately NOT zero-initialising the gate: the question here is
+    // whether the path carries signal when the gate is open.
+
+    let cfg = cca_config();
+    let kv_rows = cfg.num_chunks() * cfg.neighbour_kv_rows();
+    session.set_input_u32("token_ids", &token_ids());
+    session.set_input(input_names::T_COL, &[0.5; SEQ]);
+    session.set_input(input_names::RETRIEVAL_MASK, &[1.0; SEQ]);
+
+    session.set_input(
+        input_names::NEIGHBOUR_KV,
+        &param_values("kv_a", kv_rows * cfg.model_dim()),
+    );
+    session.step();
+    session.wait();
+    let with_a = session.read_output(SEQ * VOCAB);
+
+    session.set_input(
+        input_names::NEIGHBOUR_KV,
+        &param_values("kv_b", kv_rows * cfg.model_dim()),
+    );
+    session.step();
+    session.wait();
+    let with_b = session.read_output(SEQ * VOCAB);
+
+    let diff: f32 = with_a
+        .iter()
+        .zip(&with_b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f32::max);
+    assert!(
+        diff > 1e-6,
+        "different neighbours produced identical logits: the CCA path is not connected"
+    );
+}
+
+#[test]
+fn the_retrieval_mask_gates_the_whole_block() {
+    // A chunk that retrieved nothing must contribute nothing, whatever the
+    // gate has learned. Attending to a zero-filled key/value block is not the
+    // same as not attending.
+    let (g, _model) = build_model(GateActivation::Tanh);
+    let mut session = meganeura::build(&g, meganeura::SessionConfig::inference_from_env()).0;
+    fill_params(&mut session);
+
+    let cfg = cca_config();
+    let kv_rows = cfg.num_chunks() * cfg.neighbour_kv_rows();
+    session.set_input_u32("token_ids", &token_ids());
+    session.set_input(input_names::T_COL, &[0.5; SEQ]);
+    session.set_input(input_names::RETRIEVAL_MASK, &[0.0; SEQ]);
+
+    session.set_input(
+        input_names::NEIGHBOUR_KV,
+        &param_values("kv_a", kv_rows * cfg.model_dim()),
+    );
+    session.step();
+    session.wait();
+    let masked_a = session.read_output(SEQ * VOCAB);
+
+    session.set_input(
+        input_names::NEIGHBOUR_KV,
+        &param_values("kv_b", kv_rows * cfg.model_dim()),
+    );
+    session.step();
+    session.wait();
+    let masked_b = session.read_output(SEQ * VOCAB);
+
+    assert_eq!(
+        masked_a, masked_b,
+        "with the mask at zero the neighbours must not reach the output"
+    );
+}

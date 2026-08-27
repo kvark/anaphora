@@ -63,7 +63,25 @@ impl BackboneConfig {
     }
 }
 
-/// Parameter node ids for one frozen backbone layer.
+/// Whether the backbone's parameters train.
+///
+/// A retrofit freezes them — that is the premise. But Phase 1 has to *make*
+/// the backbone it later freezes, and a random backbone is not a stand-in: a
+/// randomly initialised LM head cannot express a specific token, so a
+/// retrofit bolted onto one has no way to demonstrate that retrieval helps,
+/// and no way to leak either. Calibrating a leak detector against a model
+/// that cannot leak measures nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Freezing {
+    /// Parameters are routed through `stop_gradient`. The retrofit setting.
+    #[default]
+    Frozen,
+    /// Parameters train. For pretraining the backbone that will later be
+    /// frozen.
+    Trainable,
+}
+
+/// Parameter node ids for one backbone layer.
 #[derive(Debug, Clone, Copy)]
 pub struct BackboneLayer {
     attn_norm: NodeId,
@@ -90,39 +108,41 @@ pub struct Backbone {
 impl Backbone {
     /// Declare the backbone's parameters, all frozen, under `prefix`.
     pub fn new(g: &mut Graph, prefix: &str, cfg: BackboneConfig) -> Self {
+        Self::with_freezing(g, prefix, cfg, Freezing::Frozen)
+    }
+
+    /// Declare the backbone's parameters under `prefix`, frozen or not.
+    pub fn with_freezing(
+        g: &mut Graph,
+        prefix: &str,
+        cfg: BackboneConfig,
+        freezing: Freezing,
+    ) -> Self {
+        let declare = |g: &mut Graph, name: &str, shape: &[usize]| match freezing {
+            Freezing::Frozen => frozen_parameter(g, name, shape),
+            Freezing::Trainable => g.parameter(name, shape),
+        };
         let d = cfg.model_dim();
         let kv = cfg.kv_dim();
-        let embed = frozen_parameter(g, &format!("{prefix}.embed"), &[cfg.vocab_size, d]);
+        let embed = declare(g, &format!("{prefix}.embed"), &[cfg.vocab_size, d]);
         let layers = (0..cfg.num_layers)
             .map(|layer| {
                 let p = format!("{prefix}.layers.{layer}");
                 BackboneLayer {
-                    attn_norm: frozen_parameter(g, &format!("{p}.attn_norm"), &[d]),
-                    q_proj: frozen_parameter(g, &format!("{p}.q_proj"), &[d, d]),
-                    k_proj: frozen_parameter(g, &format!("{p}.k_proj"), &[d, kv]),
-                    v_proj: frozen_parameter(g, &format!("{p}.v_proj"), &[d, kv]),
-                    o_proj: frozen_parameter(g, &format!("{p}.o_proj"), &[d, d]),
-                    ffn_norm: frozen_parameter(g, &format!("{p}.ffn_norm"), &[d]),
-                    gate_proj: frozen_parameter(
-                        g,
-                        &format!("{p}.gate_proj"),
-                        &[d, cfg.intermediate_size],
-                    ),
-                    up_proj: frozen_parameter(
-                        g,
-                        &format!("{p}.up_proj"),
-                        &[d, cfg.intermediate_size],
-                    ),
-                    down_proj: frozen_parameter(
-                        g,
-                        &format!("{p}.down_proj"),
-                        &[cfg.intermediate_size, d],
-                    ),
+                    attn_norm: declare(g, &format!("{p}.attn_norm"), &[d]),
+                    q_proj: declare(g, &format!("{p}.q_proj"), &[d, d]),
+                    k_proj: declare(g, &format!("{p}.k_proj"), &[d, kv]),
+                    v_proj: declare(g, &format!("{p}.v_proj"), &[d, kv]),
+                    o_proj: declare(g, &format!("{p}.o_proj"), &[d, d]),
+                    ffn_norm: declare(g, &format!("{p}.ffn_norm"), &[d]),
+                    gate_proj: declare(g, &format!("{p}.gate_proj"), &[d, cfg.intermediate_size]),
+                    up_proj: declare(g, &format!("{p}.up_proj"), &[d, cfg.intermediate_size]),
+                    down_proj: declare(g, &format!("{p}.down_proj"), &[cfg.intermediate_size, d]),
                 }
             })
             .collect();
-        let out_norm = frozen_parameter(g, &format!("{prefix}.out_norm"), &[d]);
-        let lm_head = frozen_parameter(g, &format!("{prefix}.lm_head"), &[d, cfg.vocab_size]);
+        let out_norm = declare(g, &format!("{prefix}.out_norm"), &[d]);
+        let lm_head = declare(g, &format!("{prefix}.lm_head"), &[d, cfg.vocab_size]);
         Self {
             cfg,
             embed,
@@ -140,6 +160,32 @@ impl Backbone {
     /// Number of layers.
     pub fn num_layers(&self) -> usize {
         self.layers.len()
+    }
+
+    /// Every parameter name this backbone owns, under `prefix`.
+    ///
+    /// The list a pretrained backbone is transferred through: train one graph
+    /// with [`Freezing::Trainable`], read these, and write them into the
+    /// retrofit graph that declares the same names frozen.
+    pub fn param_names(prefix: &str, cfg: BackboneConfig) -> Vec<String> {
+        let mut names = vec![format!("{prefix}.embed")];
+        for layer in 0..cfg.num_layers {
+            let p = format!("{prefix}.layers.{layer}");
+            names.extend([
+                format!("{p}.attn_norm"),
+                format!("{p}.q_proj"),
+                format!("{p}.k_proj"),
+                format!("{p}.v_proj"),
+                format!("{p}.o_proj"),
+                format!("{p}.ffn_norm"),
+                format!("{p}.gate_proj"),
+                format!("{p}.up_proj"),
+                format!("{p}.down_proj"),
+            ]);
+        }
+        names.push(format!("{prefix}.out_norm"));
+        names.push(format!("{prefix}.lm_head"));
+        names
     }
 
     /// Embed `token_ids` (`[n]`, U32) into `[n, d]`.

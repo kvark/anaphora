@@ -9,6 +9,18 @@ rust-version = "1.88"
 description = "Retrieval-augmented masked-diffusion language modeling"
 license = "MIT"
 
+[features]
+default = []
+# The Phase 1 calibration harness. Enables a training mode whose retriever
+# queries the *clean* sequence instead of the noised view -- the exact bug
+# `view` exists to prevent, deliberately reproduced so the evaluation
+# protocol can be checked against a run that is known to be leaking.
+#
+# Gated because a supported switch for the project's central failure is in
+# tension with making that failure unrepresentable. Without the feature the
+# `QuerySource` variant does not exist, so no code can select it.
+leak-harness = []
+
 [dependencies]
 # Anaphora builds its graphs with Meganeura's IR and trains them through
 # Meganeura's session/autodiff stack. Pinned to a git revision for the
@@ -47,3 +59,7 @@ collapsible_if = "allow"
 needless_range_loop = "allow"
 # We don't match on a reference, unless required.
 pattern_type_mismatch = "warn"
+
+[[example]]
+name = "leak_calibration"
+path = "examples/leak_calibration.rs"

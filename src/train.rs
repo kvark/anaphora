@@ -87,6 +87,30 @@ impl NoiseSampler {
     }
 }
 
+/// Where retrieval queries are built from.
+///
+/// There is exactly one correct answer, and the other variant exists only
+/// behind the `leak-harness` feature so that Phase 1 can calibrate its
+/// evaluation protocol against a run known to be leaking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuerySource {
+    /// The noised view the denoiser sees. The retriever may only see what the
+    /// denoiser sees.
+    #[default]
+    NoisedView,
+    /// **The leak, on purpose.** Query a clean view of the same sequence, so
+    /// the retrieved neighbours correlate with exactly the tokens that were
+    /// masked.
+    ///
+    /// Never enable this for a run whose numbers anyone will read. Its whole
+    /// purpose is to produce a run that *should* be flagged, so that a
+    /// protocol which fails to flag it is known to be broken before it is
+    /// trusted with a real result. Perplexity improves under this setting;
+    /// that is the point.
+    #[cfg(feature = "leak-harness")]
+    CleanSequenceLeak,
+}
+
 /// Training hyper-parameters that are not the model's shape.
 #[derive(Debug, Clone)]
 pub struct TrainingConfig {
@@ -105,6 +129,8 @@ pub struct TrainingConfig {
     /// `false` gives the no-retrieval baseline the evaluation protocol
     /// compares against, without building a second model.
     pub retrieval_enabled: bool,
+    /// Where queries come from. Leave at the default.
+    pub query_source: QuerySource,
 }
 
 impl TrainingConfig {
@@ -117,6 +143,7 @@ impl TrainingConfig {
             noise: NoiseSampler::Uniform,
             admission: ChunkAdmission::default(),
             retrieval_enabled: true,
+            query_source: QuerySource::default(),
         }
     }
 }
@@ -299,7 +326,20 @@ impl Trainer {
         if !self.cfg.retrieval_enabled {
             return None;
         }
-        let chunked = ChunkedView::new(view, self.cfg.cca).ok()?;
+        // The view the *retriever* reads. Identical to the denoiser's, unless
+        // the calibration harness is deliberately breaking that.
+        let query_view = match self.cfg.query_source {
+            QuerySource::NoisedView => None,
+            #[cfg(feature = "leak-harness")]
+            QuerySource::CleanSequenceLeak => Some(NoisedView::from_tokens(
+                seq.tokens.clone(),
+                view.noise_level(),
+                self.cfg.mask_token,
+            )),
+        };
+        let query_view = query_view.as_ref().unwrap_or(view);
+
+        let chunked = ChunkedView::new(query_view, self.cfg.cca).ok()?;
         // `Phase::Training` closes the low-`t` band, where a neighbour's
         // continuation could hold the few remaining answers.
         let queries = chunk_queries(
@@ -351,12 +391,36 @@ impl Trainer {
             }
         }
 
-        session.set_input_u32("token_ids", view.tokens());
-        session.set_input(input_names::T_COL, &self.t_col);
-        session.set_input(input_names::RETRIEVAL_MASK, &self.retrieval_mask);
-        session.set_input_u32("cca.neighbour_tokens", &self.neighbour_tokens);
-        session.set_input("labels", &self.labels);
+        bind_inputs(
+            session,
+            view,
+            &self.t_col,
+            &self.retrieval_mask,
+            &self.neighbour_tokens,
+            &self.labels,
+        );
     }
+}
+
+/// Bind one step's inputs onto a session.
+///
+/// Shared with evaluation, which runs the same graph over substituted
+/// neighbour blocks — the random-neighbour and oracle conditions differ from
+/// a training step only in what lands in `neighbour_tokens`, and routing both
+/// through one function is what keeps them comparable.
+pub fn bind_inputs(
+    session: &mut Session,
+    view: &NoisedView,
+    t_col: &[f32],
+    retrieval_mask: &[f32],
+    neighbour_tokens: &[u32],
+    labels: &[f32],
+) {
+    session.set_input_u32("token_ids", view.tokens());
+    session.set_input(input_names::T_COL, t_col);
+    session.set_input(input_names::RETRIEVAL_MASK, retrieval_mask);
+    session.set_input_u32("cca.neighbour_tokens", neighbour_tokens);
+    session.set_input("labels", labels);
 }
 
 /// Which optimizer `Session::step` applies.

@@ -12,6 +12,32 @@ worse than no V0, because it costs the same and then has to be re-run.
 
 Everything below is ordered by that definition.
 
+## Phase 1 status
+
+Workstreams 1-3 are built and tested on a software Vulkan device: the
+objective, the corpus and index pipeline, and the host training loop. A
+retrofit trains end to end, and loss falls through the CCA path alone.
+
+Workstream 4 is **partly done**. `Backbone` can now be trained as well as
+frozen, the evaluation protocol is implemented, and
+`examples/leak_calibration.rs` runs both arms -- honest, and the deliberate
+`x_0` leak behind the `leak-harness` feature.
+
+**The calibration has not passed, and does not claim to.** On uniform-random
+synthetic topics the retrofit beats its own no-retrieval baseline by about
+1%, and the harness refuses a verdict below 5%, exiting 3 with
+`INCONCLUSIVE`. That is the correct outcome rather than a defect: a leak
+detector cannot be calibrated against a model that learned nothing to leak,
+and a harness that returned PASS there would be a coin flip wearing a
+protocol's clothes.
+
+What it needs is the real Phase 1 setup this document already specifies:
+Simple English Wikipedia instead of synthetic topics, a backbone pretrained
+to convergence rather than 900 steps, and a retrofit trained long enough that
+retrieval is demonstrably worth something before anyone asks whether it is
+worth too much. The machinery to run it exists; the data pipeline from
+parquet to `Document` does not yet.
+
 ## Where the code stands
 
 Built and tested: the CCA block, the gates, the frozen-backbone wiring, the

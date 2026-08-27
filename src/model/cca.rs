@@ -164,6 +164,10 @@ impl CcaBlock {
         // learn to ignore whatever attending to zeros happens to produce.
         let mask = g.broadcast_inner(inputs.retrieval_mask, d);
         let gate = g.mul(gate, mask);
+        // Named so `Session::read_node_by_name` can recover it in a debug
+        // session: a gate saturating open at low `t` during training is the
+        // leak's signature, and it is only visible if the value has a name.
+        let gate = g.named(gate, format!("{}.gate", self.prefix));
 
         let gated = g.mul(gate, ctx);
         let out = g.add(h, gated);

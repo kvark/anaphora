@@ -60,6 +60,7 @@
 pub mod chunk;
 pub mod config;
 pub mod corpus;
+pub mod eval;
 pub mod loss;
 pub mod model;
 pub mod retrieval;
@@ -71,6 +72,7 @@ pub mod view;
 pub use chunk::{ChunkAdmission, ChunkQueries, ChunkedView, RetrieverEncode, chunk_queries};
 pub use config::{CcaConfig, ConfigError};
 pub use corpus::{ChunkEmbedder, Document, HashedBagEmbedder, TrainingSequence};
+pub use eval::{EvalReport, Evaluator, NeighbourCondition};
 pub use loss::{LabelStats, MaskedDiffusionLoss};
 pub use model::{CcaInsertion, CcaModel, ModelConfig, NeighbourInput};
 pub use retrieval::{Neighbours, retrieve};
