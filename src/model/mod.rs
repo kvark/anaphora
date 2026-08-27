@@ -32,13 +32,22 @@ pub enum NeighbourInput {
     Cached,
 }
 
+/// A CCA block and the backbone layer it was inserted after.
+#[derive(Debug, Clone)]
+pub struct CcaInsertion {
+    /// Index of the backbone layer this block follows.
+    pub layer: usize,
+    /// The block itself.
+    pub block: CcaBlock,
+}
+
 /// A retrieval-augmented masked-diffusion model.
 #[derive(Debug, Clone)]
 pub struct CcaModel {
     cfg: CcaConfig,
     backbone: Backbone,
     encoder: Option<NeighbourEncoder>,
-    blocks: Vec<(usize, CcaBlock)>,
+    blocks: Vec<CcaInsertion>,
     logits: NodeId,
 }
 
@@ -132,7 +141,7 @@ impl CcaModel {
             if cca.is_cca_layer(layer) {
                 let block = CcaBlock::new(g, &format!("cca.{layer}"), cca, cfg.activation);
                 x = block.forward(g, x, inputs);
-                blocks.push((layer, block));
+                blocks.push(CcaInsertion { layer, block });
             }
         }
         let logits = backbone.head(g, x);
@@ -168,7 +177,7 @@ impl CcaModel {
     }
 
     /// The CCA blocks, paired with the backbone layer they follow.
-    pub fn blocks(&self) -> &[(usize, CcaBlock)] {
+    pub fn blocks(&self) -> &[CcaInsertion] {
         &self.blocks
     }
 
@@ -176,11 +185,11 @@ impl CcaModel {
     /// gates. The backbone is absent by construction.
     pub fn trainable_param_names(&self) -> Vec<String> {
         let mut names = Vec::new();
-        if let Some(encoder) = &self.encoder {
+        if let Some(ref encoder) = self.encoder {
             names.extend(encoder.param_names());
         }
-        for (_, block) in &self.blocks {
-            names.extend(block.param_names());
+        for insertion in &self.blocks {
+            names.extend(insertion.block.param_names());
         }
         names
     }
@@ -190,8 +199,9 @@ impl CcaModel {
     pub fn zero_init_param_names(&self) -> Vec<String> {
         self.blocks
             .iter()
-            .flat_map(|(_, block)| {
-                block
+            .flat_map(|insertion| {
+                insertion
+                    .block
                     .gate()
                     .params()
                     .zero_init_names()

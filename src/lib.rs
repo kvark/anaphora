@@ -67,7 +67,7 @@ pub mod view;
 
 pub use chunk::{ChunkAdmission, ChunkQueries, ChunkedView, RetrieverEncode, chunk_queries};
 pub use config::{CcaConfig, ConfigError};
-pub use model::{CcaModel, ModelConfig, NeighbourInput};
+pub use model::{CcaInsertion, CcaModel, ModelConfig, NeighbourInput};
 pub use retrieval::{Neighbours, retrieve};
 pub use schedule::{NoiseLevel, Phase, RefreshSchedule, retrieve_now, trajectory};
 pub use view::{CleanSequence, MaskToken, NoisedView, ViewId};

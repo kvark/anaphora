@@ -10,11 +10,11 @@ const MASK: MaskToken = MaskToken(0);
 
 fn corpus_with(docs: &[(u64, &[u32])], r: usize) -> NeighbourCorpus {
     let mut corpus = NeighbourCorpus::new(r, 2);
-    for (i, (doc, tokens)) in docs.iter().enumerate() {
+    for (i, &(doc, tokens)) in docs.iter().enumerate() {
         corpus
             .push(
                 &NeighbourRecord {
-                    document: DocumentId(*doc),
+                    document: DocumentId(doc),
                     offset: 0,
                     tokens: tokens.to_vec(),
                 },

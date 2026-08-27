@@ -63,7 +63,7 @@ fn main() {
         );
         println!(
             "  CCA blocks after backbone layers {:?}",
-            model.blocks().iter().map(|(l, _)| *l).collect::<Vec<_>>()
+            model.blocks().iter().map(|i| i.layer).collect::<Vec<_>>()
         );
         println!("  graph nodes: {}", g.nodes().len());
         println!(

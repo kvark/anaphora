@@ -44,7 +44,7 @@ pub enum ConfigError {
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+        match *self {
             Self::Zero(field) => write!(f, "`{field}` must be non-zero"),
             Self::SequenceNotChunkAligned { n, m } => write!(
                 f,
@@ -94,7 +94,6 @@ impl CcaConfig {
     ///
     /// `insert_every` is RETRO's `P` — a CCA block goes in after every `P`th
     /// backbone layer, starting at `first_cca_layer`.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n: usize,
         m: usize,

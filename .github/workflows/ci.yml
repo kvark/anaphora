@@ -27,6 +27,10 @@ jobs:
       - name: Check every target
         run: cargo check --all-targets
 
+      # The rule set itself lives in `[lints]` in Cargo.toml, borrowed from
+      # blade-graphics and meganeura. `-D warnings` is what promotes the
+      # `warn` entries there to build failures, and `--all-targets` is what
+      # extends them past the library to the tests and examples.
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

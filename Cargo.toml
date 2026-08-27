@@ -18,3 +18,32 @@ license = "MIT"
 meganeura = { git = "https://github.com/kvark/meganeura", branch = "main" }
 
 [dev-dependencies]
+
+# Borrowed from blade-graphics and meganeura, so the three crates are read
+# and reviewed under one rule set. Declared here rather than as `lib.rs`
+# crate attributes so they cover every target in the package -- the tests
+# carry as much of the reasoning as the library does, and linting them under
+# a different set is how the two drift apart.
+[lints.rust]
+trivial_numeric_casts = "warn"
+unused_extern_crates = "warn"
+
+[lints.clippy]
+# We don't use syntax sugar where it's not necessary.
+match_like_matches_macro = "allow"
+# Redundant matching is more explicit.
+redundant_pattern_matching = "allow"
+# Explicit lifetimes are often easier to reason about.
+needless_lifetimes = "allow"
+# No need for defaults in the internal types.
+new_without_default = "allow"
+# Matches are good and extendable, no need to make an exception here.
+single_match = "allow"
+# Let me decide when it's too many.
+too_many_arguments = "allow"
+# Nested conditions often read better than a merged one.
+collapsible_if = "allow"
+# Indexing several parallel slices by one range is clearer than zipping.
+needless_range_loop = "allow"
+# We don't match on a reference, unless required.
+pattern_type_mismatch = "warn"

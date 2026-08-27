@@ -54,7 +54,7 @@ pub enum CorpusError {
 
 impl std::fmt::Display for CorpusError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+        match *self {
             Self::TokenLenMismatch { got, expected } => {
                 write!(f, "neighbour has {got} tokens, corpus expects r={expected}")
             }

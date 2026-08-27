@@ -156,18 +156,16 @@ pub fn sample<I: NeighbourIndex, E: RetrieverEncode, D: Denoiser>(
         // it advances before either runs.
         view = view.reveal(&[], t);
 
+        // Between refreshes `cached` is reused as-is. It came from an
+        // earlier, noisier view, which is the whole point of caching — but it
+        // also means the `ViewId` check cannot apply to a cached block. The
+        // staleness is the refresh schedule's decision, made here, rather than
+        // something the type system lets pass unnoticed elsewhere.
         if sampling.refresh.advance(t) {
             cached = refresh(&view, cfg, sampling, retrieval);
             if cached.is_some() {
                 trace.refreshes += 1;
             }
-        } else if let Some(neighbours) = &cached {
-            // Cached neighbours came from an earlier, noisier view. That is
-            // the whole point of caching — but it means the view-identity
-            // check cannot be applied to a cached block, so the staleness has
-            // to be a decision the schedule makes rather than one the type
-            // system permits silently. Re-tag against the current view.
-            let _ = neighbours;
         }
 
         if cached.is_none() {
