@@ -1,0 +1,20 @@
+[package]
+name = "anaphora"
+version = "0.1.0"
+authors = ["Dzmitry Malyshau"]
+repository = "https://github.com/kvark/anaphora"
+categories = ["science"]
+edition = "2024"
+rust-version = "1.88"
+description = "Retrieval-augmented masked-diffusion language modeling"
+license = "MIT"
+
+[dependencies]
+# Anaphora builds its graphs with Meganeura's IR and trains them through
+# Meganeura's session/autodiff stack. Pinned to a git revision for the
+# same reason Meganeura pins Blade: the APIs used here (`split_a`/`split_b`
+# autodiff, `broadcast_inner`, `cross_attention`) move faster than the
+# crates.io release cadence.
+meganeura = { git = "https://github.com/kvark/meganeura", branch = "main" }
+
+[dev-dependencies]
