@@ -281,3 +281,35 @@ fn the_protocol_runs_and_separates_its_conditions() {
     assert_ne!(real, ablated, "retrieval made no difference at all");
     assert_ne!(oracle, real, "the oracle block made no difference");
 }
+
+#[test]
+fn a_ratio_from_noise_is_not_reported() {
+    // Dividing one near-zero difference by another yields a confident-looking
+    // number out of nothing. An untrained retrofit produces exactly this,
+    // because the zero-init gate makes every condition identical.
+    let r = EvalReport {
+        conditions: vec![
+            report(NeighbourCondition::Real, 12.0538),
+            report(NeighbourCondition::Random, 12.0538),
+            report(NeighbourCondition::Ablated, 12.0538),
+            report(NeighbourCondition::Oracle, 12.0538),
+        ],
+    };
+    assert!(r.is_within_noise());
+    let table = r.to_table();
+    assert!(
+        table.contains("within noise"),
+        "the table should decline to report a ratio:\n{table}"
+    );
+
+    // A real gain is reported normally.
+    let solid = EvalReport {
+        conditions: vec![
+            report(NeighbourCondition::Real, 3.0),
+            report(NeighbourCondition::Random, 3.4),
+            report(NeighbourCondition::Ablated, 3.5),
+        ],
+    };
+    assert!(!solid.is_within_noise());
+    assert!(solid.to_table().contains("copy ratio (gap/gain)"));
+}

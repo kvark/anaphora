@@ -14,29 +14,42 @@ Everything below is ordered by that definition.
 
 ## Phase 1 status
 
-Workstreams 1-3 are built and tested on a software Vulkan device: the
-objective, the corpus and index pipeline, and the host training loop. A
-retrofit trains end to end, and loss falls through the CCA path alone.
+The machinery is complete and runs on real data. What is missing is a GPU.
 
-Workstream 4 is **partly done**. `Backbone` can now be trained as well as
-frozen, the evaluation protocol is implemented, and
-`examples/leak_calibration.rs` runs both arms -- honest, and the deliberate
-`x_0` leak behind the `leak-harness` feature.
+**Built and tested:** the masked-diffusion objective, the corpus and index
+pipeline, the host training loop, the evaluation protocol, the leak
+calibration harness, and the ingest path from a Wikipedia parquet dump to
+training shards.
 
-**The calibration has not passed, and does not claim to.** On uniform-random
-synthetic topics the retrofit beats its own no-retrieval baseline by about
-1%, and the harness refuses a verdict below 5%, exiting 3 with
-`INCONCLUSIVE`. That is the correct outcome rather than a defect: a leak
-detector cannot be calibrated against a model that learned nothing to leak,
-and a harness that returned PASS there would be a coin flip wearing a
-protocol's clothes.
+**The corpus exists.** `prepare_corpus` was run against `20231101.simple`:
+241,787 articles, 131,624 kept above 128 tokens.
 
-What it needs is the real Phase 1 setup this document already specifies:
-Simple English Wikipedia instead of synthetic topics, a backbone pretrained
-to convergence rather than 900 steps, and a retrofit trained long enough that
-retrieval is demonstrably worth something before anyone asks whether it is
-worth too much. The machinery to run it exists; the data pipeline from
-parquet to `Document` does not yet.
+| shard | documents | tokens |
+|---|---:|---:|
+| train | 105,185 | 55.1M |
+| index | 13,202 | 7.3M |
+| eval | 13,237 | 7.2M |
+
+`examples/phase1.rs` runs end to end against it — pretrain, freeze, retrofit,
+protocol — on a software Vulkan device.
+
+**What has not happened is a real run.** Lavapipe takes roughly twenty
+seconds per step at this vocabulary, so the runs done here are single-digit
+step counts, and at those the zero-init gate has barely opened: every
+evaluation condition returns the same number. That is the identity property
+holding, not a result, and the protocol now declines to report a copy ratio
+in that regime rather than dividing one near-zero difference by another.
+
+So the calibration verdict comes from hardware, not from here. On a real GPU:
+
+```sh
+cargo run --release --example phase1 -- --corpus corpus/
+cargo run --release --features leak-harness --example leak_calibration
+```
+
+The first produces the protocol table. The second must flag its leaked arm
+before the first table means anything.
+
 
 ## Where the code stands
 
@@ -48,10 +61,10 @@ Not built: **everything that turns it into a run.** Specifically —
 
 | Gap | Size | Blocks |
 |---|---|---|
-| Host training loop | medium | everything |
-| Masked-diffusion loss construction | small | everything |
-| Corpus + index build pipeline | medium | everything |
-| Evaluation harness | medium | trusting any result |
+| Host training loop | done | — |
+| Masked-diffusion loss construction | done | — |
+| Corpus + index build pipeline | done | — |
+| Evaluation harness | done | — |
 | Backbone weight loading | medium | Phase 2 only |
 | Retriever encoder for masked queries | **open research** | quality, not correctness |
 
@@ -76,18 +89,31 @@ A zero label row contributes zero loss and, since `S = 0`, zero gradient. The
 kernel's own `1/batch` division over the `n` rows supplies the `1/L`. So the
 objective is a host-side label-construction detail, not a framework change.
 
-Note this is *not* what the current GPU tests do — they use a plain one-hot
-over every position, which is a valid smoke test of the gradient path and
-**not** the diffusion objective. `MaskedDiffusionLoss` is the first thing to
-write.
+### The dense label cost turned out not to bind
+
+The operator's signature is a dense `[n, vocab]` tensor, which at LLaDA's
+vocabulary is 259 MB at `n = 512` and over a gigabyte at `n = 2048` — to
+carry at most `n` non-zero values. That looked like a reason to give Phase 1
+a smaller tokenizer.
+
+It is not, because it is not a per-step cost. Meganeura's input buffers are
+pinned by the memory plan — never aliased — and allocated `Memory::Shared`,
+so they are host-coherent and their contents survive between steps.
+`SparseLabels` keeps the buffer zeroed and each step clears only what the
+previous step wrote: about 2 KB of traffic instead of 259 MB. Only the
+allocation remains, and an indexed-label cross-entropy in Meganeura would
+remove that too — worth doing at `n = 2048`, not needed before.
+
+So the original call stands: reuse LLaDA's tokenizer in both phases, and the
+corpus pipeline carries into Phase 2 unchanged.
 
 ### The training loop cannot reuse `Trainer`
 
 `meganeura::DataLoader` streams `Vec<f32>` only, and this graph takes two U32
 inputs (`token_ids`, `cca.neighbour_tokens`) alongside its f32 ones. So the
 host loop drives `Session` directly: sample `t`, mask, build labels, run
-retrieval, `set_input_u32` / `set_input`, `step`. Straightforward, but it is
-real work and no part of it exists yet.
+retrieval, `set_input_u32` / `set_input`, `step`. Labels go through
+`SparseLabels` rather than `set_input`, for the reason above.
 
 ## Datasets
 
@@ -277,16 +303,18 @@ Seven measurements. All of them must flag the Phase 1 leaked run.
 
 Dependency-ordered. Items 1–4 are Phase 1's critical path.
 
-1. **`MaskedDiffusionLoss`** — label construction, `1/t` weighting, zero rows
-   for unmasked positions. Small, and everything downstream depends on it
-   being right. Test against a CPU reference.
-2. **Corpus pipeline** — parquet → tokenize → chunk at `m=64` with `r=128`
-   continuations → `NeighbourCorpus` + `DocumentId` from the article id →
-   `ExactIndex`. Plus the offline n-gram audit.
-3. **Host training loop** — masking, retrieval, input binding, `step`,
-   checkpointing via `Session::read_param`.
-4. **Phase 1 backbone + the leaked-run calibration.** Exit criterion above.
-5. **Evaluation harness** — the seven measurements, as one report.
+1. ~~**`MaskedDiffusionLoss`**~~ — done. Label construction, `1/t` weighting,
+   zero rows for unmasked positions, checked against a CPU reference and
+   against the kernel's gradient.
+2. ~~**Corpus pipeline**~~ — done. `prepare_corpus` and the shard format;
+   `build_corpus` chunks at `m` with `r`-token continuations and the audit
+   runs offline.
+3. ~~**Host training loop**~~ — done. Checkpointing is still just
+   `Session::read_param` at the call site; there is no checkpoint format.
+4. **Phase 1 backbone + the leaked-run calibration.** Built; the verdict
+   needs a GPU. This is the remaining item.
+5. ~~**Evaluation harness**~~ — done, as `eval::Evaluator`. Entity infilling
+   is not implemented; perplexity by band is.
 6. **Backbone weight loading** — safetensors name mapping for LLaDA-8B-Base.
 7. **Quantized frozen backbone** — `parameter_q4`/`q8`, plus the CCA width
    decision from the memory section.

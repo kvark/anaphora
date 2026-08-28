@@ -170,6 +170,21 @@ impl EvalReport {
         Some(random > ablated)
     }
 
+    /// Whether the retrieval path is worth so little that the derived ratios
+    /// are noise over noise.
+    ///
+    /// Measured relative to the ablated loss rather than absolutely, because
+    /// what counts as a small difference depends on the scale of the loss.
+    pub fn is_within_noise(&self) -> bool {
+        let Some(ablated) = self.get(NeighbourCondition::Ablated).map(|c| c.mean_loss) else {
+            return true;
+        };
+        let Some(gain) = self.retrieval_gain() else {
+            return true;
+        };
+        !ablated.is_finite() || ablated.abs() < 1e-6 || (gain / ablated).abs() < 1e-3
+    }
+
     /// Render the protocol's table.
     pub fn to_table(&self) -> String {
         let mut out = String::from("condition   mean     bands\n");
@@ -192,8 +207,16 @@ impl EvalReport {
         if let Some(gap) = self.copy_gap() {
             out.push_str(&format!("copy gap (random-real):        {gap:+.4}\n"));
         }
-        if let Some(ratio) = self.copy_ratio() {
-            out.push_str(&format!("copy ratio (gap/gain):         {ratio:+.2}\n"));
+        // The ratio is only meaningful once retrieval is worth something.
+        // Dividing one near-zero difference by another produces a
+        // confident-looking number out of pure noise -- which is exactly the
+        // kind of reading this protocol exists to prevent.
+        match (self.copy_ratio(), self.is_within_noise()) {
+            (Some(ratio), false) => {
+                out.push_str(&format!("copy ratio (gap/gain):         {ratio:+.2}\n"));
+            }
+            _ => out
+                .push_str("copy ratio:                    n/a (retrieval gain is within noise)\n"),
         }
         out
     }
