@@ -181,9 +181,10 @@ pub struct Trainer {
     cfg: TrainingConfig,
     loss: MaskedDiffusionLoss,
     rng: Rng,
-    /// Reused across steps; at `[n, vocab]` the allocation is the expensive
-    /// part.
-    labels: Vec<f32>,
+    /// Writes only the entries that changed; see [`SparseLabels`].
+    labels: SparseLabels,
+    /// The labels buffer is zeroed once, lazily, on the first step.
+    labels_zeroed: bool,
     neighbour_tokens: Vec<u32>,
     retrieval_mask: Vec<f32>,
     t_col: Vec<f32>,
@@ -230,7 +231,8 @@ impl Trainer {
         Self {
             loss,
             rng: Rng::new(seed),
-            labels: Vec::with_capacity(n * cfg.vocab_size),
+            labels: SparseLabels::new(n, cfg.vocab_size),
+            labels_zeroed: false,
             neighbour_tokens: vec![cfg.mask_token.0; kv_rows],
             retrieval_mask: vec![0.0; n],
             t_col: vec![0.0; n],
@@ -289,9 +291,17 @@ impl Trainer {
         }
 
         let (clean, view) = self.corrupt(seq);
+        if !self.labels_zeroed {
+            // Meganeura does not promise a fresh input buffer is zeroed, and
+            // every later step only undoes its own predecessor's writes.
+            self.labels
+                .zero(session, "labels")
+                .expect("the graph declares a labels input of this shape");
+            self.labels_zeroed = true;
+        }
         let stats = self
-            .loss
-            .build_labels(&view, &clean, &mut self.labels)
+            .labels
+            .write(session, "labels", self.loss, &view, &clean)
             .expect("the view was masked from this clean sequence");
         if !stats.contributes() {
             return Ok(None);
@@ -397,8 +407,134 @@ impl Trainer {
             &self.t_col,
             &self.retrieval_mask,
             &self.neighbour_tokens,
-            &self.labels,
         );
+    }
+}
+
+/// Why a sparse label write could not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SparseLabelError {
+    /// The session has no input by that name.
+    NoSuchInput,
+    /// The buffer is not `seq_len * vocab` f32s.
+    SizeMismatch { got: usize, expected: usize },
+}
+
+impl std::fmt::Display for SparseLabelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::NoSuchInput => write!(f, "no such input on this session"),
+            Self::SizeMismatch { got, expected } => {
+                write!(f, "labels buffer is {got} bytes, expected {expected}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SparseLabelError {}
+
+/// Writes the labels tensor in place, touching only what changed.
+///
+/// The dense tensor is `n * vocab` floats carrying at most `n` non-zeros. At
+/// LLaDA's vocabulary and `n = 512` that is 259 MB re-uploaded every step to
+/// convey a few hundred numbers, and over a gigabyte at `n = 2048`.
+///
+/// Meganeura's input buffers are pinned by the memory plan — never aliased —
+/// and allocated `Memory::Shared`, so they are device-local *and*
+/// host-coherent, and their contents survive between steps. That makes the
+/// dense upload avoidable: keep the buffer zeroed, and each step clear only
+/// the entries the previous step wrote before writing this step's. Per-step
+/// traffic drops from `n * vocab` floats to about `2n`.
+///
+/// The allocation itself remains. Removing that needs an indexed-label
+/// cross-entropy in Meganeura, which is worth doing for `n = 2048` and is not
+/// on Phase 1's path.
+#[derive(Debug, Clone)]
+pub struct SparseLabels {
+    seq_len: usize,
+    vocab: usize,
+    /// Flat offsets written last step, cleared before the next write.
+    dirty: Vec<usize>,
+    entries: Vec<(u32, u32)>,
+}
+
+impl SparseLabels {
+    /// A writer for an `[seq_len, vocab]` labels input.
+    pub fn new(seq_len: usize, vocab: usize) -> Self {
+        Self {
+            seq_len,
+            vocab,
+            dirty: Vec::with_capacity(seq_len),
+            entries: Vec::with_capacity(seq_len),
+        }
+    }
+
+    fn buffer<'s>(
+        &self,
+        session: &'s mut Session,
+        name: &str,
+    ) -> Result<&'s mut [f32], SparseLabelError> {
+        // The documented ordering requirement: the previous step's `wait()`
+        // must have completed before the host writes, or this frame races the
+        // GPU's in-flight read of the last one.
+        session.wait();
+        let (ptr, size) = session
+            .input_host_ptr(name)
+            .ok_or(SparseLabelError::NoSuchInput)?;
+        let expected = self.seq_len * self.vocab * size_of::<f32>();
+        if size != expected {
+            return Err(SparseLabelError::SizeMismatch {
+                got: size,
+                expected,
+            });
+        }
+        // SAFETY: the pointer comes from `input_host_ptr`, which returns the
+        // session-owned, host-coherent allocation backing this input and is
+        // valid for as long as the session lives. The size is checked to be
+        // exactly `seq_len * vocab` f32s just above, so the slice covers the
+        // allocation and no more. The buffer holds f32 label data -- it is
+        // what `set_input` writes through `bytemuck::cast_slice` -- so it is
+        // f32-aligned and initialised. `wait()` above establishes that no GPU
+        // read is in flight.
+        Ok(unsafe { std::slice::from_raw_parts_mut(ptr.cast::<f32>(), self.seq_len * self.vocab) })
+    }
+
+    /// Zero the whole buffer.
+    ///
+    /// Must run once before the first [`Self::write`]: Meganeura does not
+    /// promise a freshly allocated input buffer is zeroed, and every later
+    /// step only undoes its own predecessor's writes.
+    pub fn zero(&mut self, session: &mut Session, name: &str) -> Result<(), SparseLabelError> {
+        let buf = self.buffer(session, name)?;
+        buf.fill(0.0);
+        self.dirty.clear();
+        Ok(())
+    }
+
+    /// Write the labels for `view`, clearing the previous step's entries.
+    pub fn write(
+        &mut self,
+        session: &mut Session,
+        name: &str,
+        loss: crate::loss::MaskedDiffusionLoss,
+        view: &NoisedView,
+        clean: &CleanSequence,
+    ) -> Result<crate::loss::LabelStats, Box<dyn std::error::Error>> {
+        let stats = loss.scatter(view, clean, &mut self.entries)?;
+        let vocab = self.vocab;
+        let entries = std::mem::take(&mut self.entries);
+        let buf = self.buffer(session, name)?;
+        for &offset in &self.dirty {
+            buf[offset] = 0.0;
+        }
+        self.dirty.clear();
+        for &(position, token) in &entries {
+            let offset = position as usize * vocab + token as usize;
+            buf[offset] = stats.weight;
+            self.dirty.push(offset);
+        }
+        self.entries = entries;
+        Ok(stats)
     }
 }
 
@@ -408,19 +544,20 @@ impl Trainer {
 /// neighbour blocks — the random-neighbour and oracle conditions differ from
 /// a training step only in what lands in `neighbour_tokens`, and routing both
 /// through one function is what keeps them comparable.
+///
+/// Labels are not bound here. They go through [`SparseLabels`], which writes
+/// into the pinned buffer directly rather than re-uploading it.
 pub fn bind_inputs(
     session: &mut Session,
     view: &NoisedView,
     t_col: &[f32],
     retrieval_mask: &[f32],
     neighbour_tokens: &[u32],
-    labels: &[f32],
 ) {
     session.set_input_u32("token_ids", view.tokens());
     session.set_input(input_names::T_COL, t_col);
     session.set_input(input_names::RETRIEVAL_MASK, retrieval_mask);
     session.set_input_u32("cca.neighbour_tokens", neighbour_tokens);
-    session.set_input("labels", labels);
 }
 
 /// Which optimizer `Session::step` applies.

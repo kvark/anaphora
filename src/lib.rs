@@ -66,6 +66,7 @@ pub mod model;
 pub mod retrieval;
 pub mod sample;
 pub mod schedule;
+pub mod shard;
 pub mod train;
 pub mod view;
 
@@ -77,5 +78,6 @@ pub use loss::{LabelStats, MaskedDiffusionLoss};
 pub use model::{CcaInsertion, CcaModel, ModelConfig, NeighbourInput};
 pub use retrieval::{Neighbours, retrieve};
 pub use schedule::{NoiseLevel, Phase, RefreshSchedule, retrieve_now, trajectory};
+pub use shard::{CorpusShard, Split, split_of};
 pub use train::{RetrievalSources, StepReport, Trainer, TrainingConfig};
 pub use view::{CleanSequence, MaskToken, NoisedView, SequenceId, ViewId};

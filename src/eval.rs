@@ -37,7 +37,7 @@ use crate::retrieval::corpus::{NeighbourCorpus, NeighbourId};
 use crate::retrieval::index::NeighbourIndex;
 use crate::retrieval::retrieve;
 use crate::schedule::{NoiseLevel, Phase};
-use crate::train::{RetrievalSources, Rng, bind_inputs};
+use crate::train::{RetrievalSources, Rng, SparseLabels, bind_inputs};
 use crate::view::{CleanSequence, MaskToken, NoisedView};
 use meganeura::runtime::Session;
 
@@ -206,7 +206,8 @@ pub struct Evaluator {
     mask_token: MaskToken,
     bands: Vec<(f32, f32)>,
     rng: Rng,
-    labels: Vec<f32>,
+    labels: SparseLabels,
+    labels_zeroed: bool,
     t_col: Vec<f32>,
     retrieval_mask: Vec<f32>,
     neighbour_tokens: Vec<u32>,
@@ -228,7 +229,8 @@ impl Evaluator {
             mask_token,
             bands: Self::default_bands(),
             rng: Rng::new(seed),
-            labels: Vec::with_capacity(n * vocab_size),
+            labels: SparseLabels::new(n, vocab_size),
+            labels_zeroed: false,
             t_col: vec![0.0; n],
             retrieval_mask: vec![0.0; n],
             neighbour_tokens: vec![mask_token.0; cca.num_chunks() * cca.neighbour_kv_rows()],
@@ -248,6 +250,15 @@ impl Evaluator {
     /// which computes gradients whether or not they are wanted; leaving an
     /// optimizer configured would have the evaluation quietly train the model
     /// it is measuring. Reconfigure before resuming training.
+    ///
+    /// Clearing the optimizer stops the update, not the backward pass — the
+    /// graph still computes gradients nothing reads, so each measurement
+    /// costs roughly twice what a forward pass would. The protocol is
+    /// `windows * levels * conditions` of those, which is why the caller
+    /// should treat the window count as a budget rather than "all of them".
+    /// Removing the waste means building a second, inference-only graph and
+    /// transferring parameters into it; worth doing when evaluation stops
+    /// being a rounding error against training, and not before.
     pub fn run<I: NeighbourIndex, E: ChunkEmbedder>(
         &mut self,
         session: &mut Session,
@@ -341,9 +352,15 @@ impl Evaluator {
         sources: &mut RetrievalSources<'_, I, E>,
     ) -> Option<f32> {
         let (clean, view) = self.deterministic_view(seq, t);
+        if !self.labels_zeroed {
+            self.labels
+                .zero(session, "labels")
+                .expect("the graph declares a labels input of this shape");
+            self.labels_zeroed = true;
+        }
         let stats = self
-            .loss
-            .build_labels(&view, &clean, &mut self.labels)
+            .labels
+            .write(session, "labels", self.loss, &view, &clean)
             .expect("the view was masked from this clean sequence");
         if !stats.contributes() {
             return None;
@@ -381,7 +398,6 @@ impl Evaluator {
             &self.t_col,
             &self.retrieval_mask,
             &self.neighbour_tokens,
-            &self.labels,
         );
         session.step();
         session.wait();

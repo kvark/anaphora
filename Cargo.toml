@@ -20,6 +20,13 @@ default = []
 # tension with making that failure unrepresentable. Without the feature the
 # `QuerySource` variant does not exist, so no code can select it.
 leak-harness = []
+# The `prepare_corpus` ingest tool. Off by default, and confined to that one
+# binary: `parquet` pulls the whole of arrow, and `tokenizers` pulls onig, a C
+# library with a build script. Training reads corpus shards and needs neither
+# -- the library works on `u32` tokens and document ids, so nothing that links
+# it pays for either dependency. The same reasoning keeps `tokenizers` out of
+# meganeura's own `[dependencies]`.
+wikipedia = ["dep:parquet", "dep:arrow-array", "dep:tokenizers"]
 
 [dependencies]
 # Anaphora builds its graphs with Meganeura's IR and trains them through
@@ -28,6 +35,13 @@ leak-harness = []
 # autodiff, `broadcast_inner`, `cross_attention`) move faster than the
 # crates.io release cadence.
 meganeura = { git = "https://github.com/kvark/meganeura", branch = "main" }
+
+# Ingest only -- see the `wikipedia` feature.
+parquet = { version = "59", optional = true }
+arrow-array = { version = "59", optional = true }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = [
+    "onig",
+] }
 
 [dev-dependencies]
 
@@ -61,5 +75,14 @@ needless_range_loop = "allow"
 pattern_type_mismatch = "warn"
 
 [[example]]
+name = "phase1"
+path = "examples/phase1.rs"
+
+[[example]]
 name = "leak_calibration"
 path = "examples/leak_calibration.rs"
+
+[[bin]]
+name = "prepare_corpus"
+path = "src/bin/prepare_corpus.rs"
+required-features = ["wikipedia"]

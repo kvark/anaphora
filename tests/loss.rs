@@ -225,3 +225,98 @@ fn unmasked_positions_receive_exactly_zero_gradient() {
         }
     }
 }
+
+#[test]
+fn scatter_agrees_with_the_dense_tensor() {
+    let clean = clean();
+    let view = clean.mask_with(t(0.4), MASK, |i| i % 3 == 0);
+    let loss = MaskedDiffusionLoss::new(VOCAB);
+
+    let mut dense = Vec::new();
+    let dense_stats = loss.build_labels(&view, &clean, &mut dense).expect("valid");
+    let mut sparse = Vec::new();
+    let sparse_stats = loss.scatter(&view, &clean, &mut sparse).expect("valid");
+
+    assert_eq!(dense_stats, sparse_stats);
+    let mut rebuilt = vec![0.0f32; SEQ * VOCAB];
+    for &(position, token) in &sparse {
+        rebuilt[position as usize * VOCAB + token as usize] = sparse_stats.weight;
+    }
+    assert_eq!(rebuilt, dense, "the sparse form must rebuild the dense one");
+}
+
+#[test]
+fn sparse_writes_match_dense_uploads_on_the_gpu() {
+    // The claim behind `SparseLabels`: writing only what changed, into a
+    // pinned host-coherent buffer that survives between steps, is
+    // indistinguishable from re-uploading the whole tensor. Worth checking
+    // directly, because the failure mode is stale entries from an earlier
+    // step quietly scoring positions that should not score.
+    use anaphora::train::SparseLabels;
+
+    let mut g = Graph::new();
+    let logits = logits_from_identity(&mut g);
+    let label_input = g.input("labels", &[SEQ, VOCAB]);
+    let node = g.cross_entropy_loss(logits, label_input);
+    g.set_outputs(vec![node]);
+    let mut session = meganeura::build(&g, meganeura::SessionConfig::from_env()).0;
+    session.set_input("identity", &identity_matrix());
+    session.set_parameter("w", &probe_logits());
+
+    let loss = MaskedDiffusionLoss::new(VOCAB);
+    let clean = clean();
+    let mut writer = SparseLabels::new(SEQ, VOCAB);
+    writer.zero(&mut session, "labels").expect("labels input");
+
+    // Several steps in sequence, so a stale entry from step k-1 would show up
+    // at step k. Masking differs each time, on purpose.
+    let mut dense = Vec::new();
+    for step in 0..5u32 {
+        let view = clean.mask_with(t(0.3 + step as f32 * 0.1), MASK, |i| {
+            (i as u32 + step).is_multiple_of(3)
+        });
+
+        loss.build_labels(&view, &clean, &mut dense).expect("valid");
+        session.set_input("labels", &dense);
+        session.step();
+        session.wait();
+        let dense_loss = session.read_loss();
+
+        writer
+            .write(&mut session, "labels", loss, &view, &clean)
+            .expect("sparse write");
+        session.step();
+        session.wait();
+        let sparse_loss = session.read_loss();
+
+        assert!(
+            (dense_loss - sparse_loss).abs() < 1e-5,
+            "step {step}: sparse {sparse_loss} != dense {dense_loss}"
+        );
+    }
+}
+
+#[test]
+fn a_sparse_write_rejects_a_mis_sized_buffer() {
+    use anaphora::train::{SparseLabelError, SparseLabels};
+
+    let mut g = Graph::new();
+    let logits = logits_from_identity(&mut g);
+    let label_input = g.input("labels", &[SEQ, VOCAB]);
+    let node = g.cross_entropy_loss(logits, label_input);
+    g.set_outputs(vec![node]);
+    let mut session = meganeura::build(&g, meganeura::SessionConfig::from_env()).0;
+
+    // Claiming the wrong shape must fail loudly rather than write past the
+    // allocation.
+    let mut wrong = SparseLabels::new(SEQ * 2, VOCAB);
+    assert!(matches!(
+        wrong.zero(&mut session, "labels"),
+        Err(SparseLabelError::SizeMismatch { .. })
+    ));
+    let mut missing = SparseLabels::new(SEQ, VOCAB);
+    assert!(matches!(
+        missing.zero(&mut session, "nonexistent"),
+        Err(SparseLabelError::NoSuchInput)
+    ));
+}

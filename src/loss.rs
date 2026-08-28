@@ -180,17 +180,34 @@ impl MaskedDiffusionLoss {
         seq_len * self.vocab_size * size_of::<f32>()
     }
 
-    /// Write the label tensor for `view` into `out`, resizing it to
-    /// `seq_len * vocab_size`.
+    /// The non-zero label entries for `view`, as `(position, token)` pairs.
     ///
-    /// `out` is reused across steps rather than allocated per step; at these
-    /// sizes the allocation is the expensive part.
-    pub fn build_labels(
+    /// The dense tensor is `n * vocab` floats carrying at most `n` non-zeros,
+    /// all of them equal to [`LabelStats::weight`]. This yields the sparse
+    /// form so a caller that can write into the labels buffer directly does
+    /// not have to materialise the rest — see [`crate::train::SparseLabels`].
+    pub fn scatter(
         self,
         view: &NoisedView,
         clean: &CleanSequence,
-        out: &mut Vec<f32>,
+        out: &mut Vec<(u32, u32)>,
     ) -> Result<LabelStats, LabelError> {
+        self.check(view, clean)?;
+        out.clear();
+        for (position, &token) in clean.targets().iter().enumerate() {
+            if view.masked()[position] {
+                out.push((position as u32, token));
+            }
+        }
+        Ok(LabelStats {
+            scored: out.len(),
+            seq_len: view.len(),
+            weight: self.weight(view.noise_level()),
+        })
+    }
+
+    /// Shared validation for both label forms.
+    fn check(self, view: &NoisedView, clean: &CleanSequence) -> Result<(), LabelError> {
         if view.len() != clean.len() {
             return Err(LabelError::LengthMismatch {
                 view: view.len(),
@@ -203,13 +220,7 @@ impl MaskedDiffusionLoss {
                 offered: clean.id(),
             });
         }
-
-        let weight = self.weight(view.noise_level());
-        let targets = clean.targets();
-
-        // Validate before writing, so a rejected call leaves `out` untouched
-        // rather than half-filled with a tensor the caller might still upload.
-        for (position, &token) in targets.iter().enumerate() {
+        for (position, &token) in clean.targets().iter().enumerate() {
             if view.masked()[position] && token as usize >= self.vocab_size {
                 return Err(LabelError::TokenOutOfRange {
                     position,
@@ -218,6 +229,25 @@ impl MaskedDiffusionLoss {
                 });
             }
         }
+        Ok(())
+    }
+
+    /// Write the label tensor for `view` into `out`, resizing it to
+    /// `seq_len * vocab_size`.
+    ///
+    /// `out` is reused across steps rather than allocated per step; at these
+    /// sizes the allocation is the expensive part.
+    pub fn build_labels(
+        self,
+        view: &NoisedView,
+        clean: &CleanSequence,
+        out: &mut Vec<f32>,
+    ) -> Result<LabelStats, LabelError> {
+        // Validate before writing, so a rejected call leaves `out` untouched
+        // rather than half-filled with a tensor the caller might still upload.
+        self.check(view, clean)?;
+        let weight = self.weight(view.noise_level());
+        let targets = clean.targets();
 
         out.clear();
         out.resize(view.len() * self.vocab_size, 0.0);
