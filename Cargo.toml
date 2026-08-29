@@ -20,13 +20,15 @@ default = []
 # tension with making that failure unrepresentable. Without the feature the
 # `QuerySource` variant does not exist, so no code can select it.
 leak-harness = []
+# Tokenizer only: the interactive `play` binary, without pulling parquet/arrow.
+text = ["dep:tokenizers"]
 # The `prepare_corpus` ingest tool. Off by default, and confined to that one
 # binary: `parquet` pulls the whole of arrow, and `tokenizers` pulls onig, a C
 # library with a build script. Training reads corpus shards and needs neither
 # -- the library works on `u32` tokens and document ids, so nothing that links
 # it pays for either dependency. The same reasoning keeps `tokenizers` out of
 # meganeura's own `[dependencies]`.
-wikipedia = ["dep:parquet", "dep:arrow-array", "dep:tokenizers"]
+wikipedia = ["dep:parquet", "dep:arrow-array", "text"]
 
 [dependencies]
 # Anaphora builds its graphs with Meganeura's IR and trains them through
@@ -86,3 +88,8 @@ path = "examples/leak_calibration.rs"
 name = "prepare_corpus"
 path = "src/bin/prepare_corpus.rs"
 required-features = ["wikipedia"]
+
+[[bin]]
+name = "play"
+path = "src/bin/play.rs"
+required-features = ["text"]

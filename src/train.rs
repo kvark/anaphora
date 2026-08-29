@@ -610,6 +610,45 @@ pub fn configure_optimizer(session: &mut Session, optimizer: Optimizer) {
     }
 }
 
+/// Fill parameters with a deterministic small-random init keyed by `seed`
+/// and the parameter name.
+///
+/// `only` restricts the write to that name list (the retrofit's trainable
+/// tensors, after a pretrained backbone has already been copied in). Norm
+/// scale parameters are initialised near 1; everything else is a small
+/// symmetric range so the first forward does not blow up.
+pub fn seed_parameters(session: &mut Session, seed: u64, only: Option<&[String]>) {
+    let names: Vec<String> = session
+        .param_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    for name in names {
+        if let Some(only) = only
+            && !only.contains(&name)
+        {
+            continue;
+        }
+        let len = session.param_size(&name).expect("declared");
+        let mixed = name
+            .bytes()
+            .fold(0u64, |a, b| a.rotate_left(5) ^ u64::from(b));
+        let mut rng = Rng::new(seed ^ mixed);
+        let is_norm = name.contains("norm");
+        let scale = (2.0 / len as f32).sqrt().min(0.08);
+        let values: Vec<f32> = (0..len)
+            .map(|_| {
+                if is_norm {
+                    1.0
+                } else {
+                    (rng.next_f32() - 0.5) * 2.0 * scale
+                }
+            })
+            .collect();
+        session.set_parameter(&name, &values);
+    }
+}
+
 /// Write the zero-init parameters a freshly built model needs before its
 /// first step, so every CCA block starts as the identity.
 ///
