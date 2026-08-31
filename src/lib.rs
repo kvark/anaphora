@@ -49,6 +49,7 @@
 //! | [`model::cca`], [`model::gate`] | §2 the CCA block |
 //! | [`schedule`] | §3 the hard gate |
 //! | [`sample`] | §4 inference inside the denoising loop |
+//! | [`mod@generate`] | session-backed sampling for a playable loop |
 //!
 //! # Status
 //!
@@ -57,10 +58,12 @@
 //! — [`chunk::RetrieverEncode`] is the seam where the three candidate answers
 //! plug in. See `docs/roadmap.md`.
 
+pub mod checkpoint;
 pub mod chunk;
 pub mod config;
 pub mod corpus;
 pub mod eval;
+pub mod generate;
 pub mod loss;
 pub mod model;
 pub mod retrieval;
@@ -70,14 +73,16 @@ pub mod shard;
 pub mod train;
 pub mod view;
 
+pub use checkpoint::{Checkpoint, CheckpointError, CheckpointMeta};
 pub use chunk::{ChunkAdmission, ChunkQueries, ChunkedView, RetrieverEncode, chunk_queries};
 pub use config::{CcaConfig, ConfigError};
 pub use corpus::{ChunkEmbedder, Document, HashedBagEmbedder, TrainingSequence};
 pub use eval::{EvalReport, Evaluator, NeighbourCondition};
+pub use generate::{SessionDenoiser, decode_token_ids, generate};
 pub use loss::{LabelStats, MaskedDiffusionLoss};
 pub use model::{CcaInsertion, CcaModel, ModelConfig, NeighbourInput};
 pub use retrieval::{Neighbours, retrieve};
 pub use schedule::{NoiseLevel, Phase, RefreshSchedule, retrieve_now, trajectory};
 pub use shard::{CorpusShard, Split, split_of};
-pub use train::{RetrievalSources, StepReport, Trainer, TrainingConfig};
+pub use train::{RetrievalSources, StepReport, Trainer, TrainingConfig, seed_parameters};
 pub use view::{CleanSequence, MaskToken, NoisedView, SequenceId, ViewId};

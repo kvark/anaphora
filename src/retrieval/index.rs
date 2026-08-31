@@ -60,11 +60,10 @@ impl ExactIndex {
 
     /// Number of indexed vectors.
     pub fn len(&self) -> usize {
-        if self.embed_dim == 0 {
-            0
-        } else {
-            self.embeddings.len() / self.embed_dim
-        }
+        self.embeddings
+            .len()
+            .checked_div(self.embed_dim)
+            .unwrap_or(0)
     }
 
     /// Whether the index is empty.

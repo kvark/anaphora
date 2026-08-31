@@ -106,6 +106,18 @@ software Vulkan device works:
 sudo apt-get install -y mesa-vulkan-drivers
 ```
 
+## Play
+
+Interactive generation (type a line, get a decoded trajectory; `quit` exits). Weights load from `runs/play.ckpt` when present. `--train` (or a missing dump) pretrains on Simple English Wikipedia and writes that file. Turns do not rebuild the graph.
+
+```sh
+cargo run --release --features text --bin play -- --train
+cargo run --release --features text --bin play
+cargo run --release --features text --bin play -- --prompt "The cat sat"
+```
+
+Needs `corpus/tokenizer.json` and the `train.shard` / `index.shard` produced by `prepare_corpus`. Pin the discrete GPU with `MEGANEURA_DEVICE_ID=0x744c`.
+
 ## License
 
 MIT.
