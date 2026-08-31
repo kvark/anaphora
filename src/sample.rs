@@ -11,6 +11,20 @@
 //! schedule: re-query at a few thresholds and cache the encoded neighbours in
 //! between. Re-querying every step makes traffic scale with `steps` and puts
 //! NVMe on the critical path.
+//!
+//! # This sampler is not the ELBO's reverse process
+//!
+//! The principled reverse process for masked diffusion unmasks each position
+//! *independently at random*, with probability `(α_s - α_t) / (1 - α_t)`.
+//! What this module does instead is reveal the positions the model is most
+//! confident about, which is what LLaDA does and what works better in
+//! practice, but it is a different sampler.
+//!
+//! The consequence is about reporting, not correctness: numbers produced by
+//! running this loop are not likelihood bounds, and should not be compared
+//! against a published diffusion perplexity as though they were. The
+//! evaluation protocol in [`crate::eval`] sidesteps this by scoring the
+//! objective directly at fixed noise levels rather than by sampling.
 
 use crate::chunk::{ChunkAdmission, ChunkedView, RetrieverEncode, chunk_queries};
 use crate::config::CcaConfig;
@@ -223,6 +237,24 @@ fn refresh<I: NeighbourIndex, E: RetrieverEncode>(
 /// numerically stable way. Comparing raw maximum logits instead would rank
 /// positions by their rows' arbitrary offsets rather than by how peaked the
 /// distributions are, and the offsets differ per position.
+///
+/// # `[MASK]` is not a legal output
+///
+/// The mask token has an id like any other, and an unconstrained `argmax`
+/// will happily choose it. That is a hard failure rather than a bad sample:
+/// the forward process never re-masks an unmasked position, so a `[MASK]`
+/// written into the sequence is stuck there for the rest of the trajectory
+/// with no way for the model to correct it.
+///
+/// It also corrupts the ranking. Confidence is the row's peak probability, so
+/// a position where the model is *sure* the answer is `[MASK]` scores as
+/// maximally confident and gets revealed first — the sampler would
+/// preferentially commit exactly the positions it has nothing to say about.
+///
+/// So the mask id is excluded from both the `argmax` and the softmax
+/// denominator. This is the sampling-time half of MDLM's zero-masking-
+/// probability parameterisation; see the note on the training half in
+/// [`crate::loss`].
 pub fn unmask_top_confidence(
     view: &NoisedView,
     logits: &[f32],
@@ -232,6 +264,7 @@ pub fn unmask_top_confidence(
     if count == 0 || vocab == 0 {
         return Vec::new();
     }
+    let mask_id = view.mask_token().0 as usize;
     let mut scored: Vec<(usize, u32, f32)> = view
         .masked()
         .iter()
@@ -239,16 +272,27 @@ pub fn unmask_top_confidence(
         .filter(|&(_, &m)| m)
         .filter_map(|(pos, _)| {
             let row = logits.get(pos * vocab..(pos + 1) * vocab)?;
-            let (arg, max) = row.iter().enumerate().fold(
-                (0usize, f32::NEG_INFINITY),
-                |(best_i, best), (i, &v)| {
-                    if v > best { (i, v) } else { (best_i, best) }
-                },
-            );
+            let mut arg = None;
+            let mut max = f32::NEG_INFINITY;
+            for (i, &v) in row.iter().enumerate() {
+                if i != mask_id && v > max {
+                    max = v;
+                    arg = Some(i);
+                }
+            }
+            let arg = arg?;
             if !max.is_finite() {
                 return None;
             }
-            let sum_exp: f32 = row.iter().map(|&v| (v - max).exp()).sum();
+            // Renormalise over the same restricted support, so the confidence
+            // is a probability under the distribution actually being sampled
+            // from rather than one that reserves mass for an illegal token.
+            let sum_exp: f32 = row
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != mask_id)
+                .map(|(_, &v)| (v - max).exp())
+                .sum();
             Some((pos, arg as u32, 1.0 / sum_exp))
         })
         .collect();

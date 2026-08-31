@@ -187,3 +187,53 @@ fn empty_neighbour_block_reports_no_chunks() {
     assert_eq!(neighbours.num_filled(), 0);
     assert_eq!(neighbours.chunk_mask(), vec![false, false]);
 }
+
+#[test]
+fn the_mask_token_is_never_revealed() {
+    // The forward process never re-masks, so a [MASK] written into the
+    // sequence is stuck for the rest of the trajectory. An unconstrained
+    // argmax will choose it whenever the model puts the most mass there.
+    let view = NoisedView::all_masked(3, MASK);
+    let mut logits = vec![0.0f32; 3 * VOCAB];
+    for pos in 0..3 {
+        // Overwhelmingly the mask token at every position.
+        logits[pos * VOCAB + MASK.0 as usize] = 20.0;
+        logits[pos * VOCAB + (pos + 1)] = 1.0;
+    }
+    let picks = unmask_top_confidence(&view, &logits, VOCAB, 3);
+    assert_eq!(picks.len(), 3);
+    for &(pos, token) in &picks {
+        assert_ne!(token, MASK.0, "position {pos} was revealed as [MASK]");
+        assert_eq!(token, pos as u32 + 1, "the best legal token should win");
+    }
+}
+
+#[test]
+fn confidence_ignores_mass_reserved_for_the_mask_token() {
+    // Ranking by a probability that includes the mask token would make a
+    // position the model has nothing to say about look maximally confident,
+    // so the sampler would commit exactly those first.
+    let view = NoisedView::all_masked(2, MASK);
+    let mut logits = vec![0.0f32; 2 * VOCAB];
+
+    // Position 0: nearly all mass on [MASK], the legal tokens are a flat tie.
+    logits[MASK.0 as usize] = 20.0;
+
+    // Position 1: a clear, peaked answer among the legal tokens.
+    logits[VOCAB + 5] = 8.0;
+
+    let picks = unmask_top_confidence(&view, &logits, VOCAB, 1);
+    assert_eq!(
+        picks,
+        vec![(1, 5)],
+        "the genuinely peaked position should be revealed first"
+    );
+}
+
+#[test]
+fn a_row_offering_only_the_mask_token_reveals_nothing() {
+    let view = NoisedView::all_masked(1, MASK);
+    let mut logits = vec![f32::NEG_INFINITY; VOCAB];
+    logits[MASK.0 as usize] = 5.0;
+    assert!(unmask_top_confidence(&view, &logits, VOCAB, 1).is_empty());
+}

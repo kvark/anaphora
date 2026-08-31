@@ -111,3 +111,29 @@ needs the encoder to run as its own small session whose output feeds the
 denoiser's `cca.neighbour_kv` input — ideally through
 `Session::bind_external_buffer`, to keep the keys/values on the device
 between the two.
+
+## Committed tokens cannot be revised, and that bounds the Phase 3 claim
+
+Masked diffusion's forward process never re-masks an unmasked position, so
+the model is never trained to correct itself: once the sampler commits a
+token, it stays. This is a known limitation of the formulation rather than
+anything specific to Anaphora, but it interacts with the project's central
+claim in a way worth stating.
+
+Re-querying on a sharpening sketch improves the *query*. It cannot repair a
+token the sampler already committed on the strength of a worse one. So the
+value of refreshing is bounded by how much of the sequence is still open when
+the better neighbours arrive — which argues for refresh thresholds early
+enough to matter, and against reading a late refresh as if it could rescue an
+early mistake.
+
+Two ways out, both of which change the backbone rather than the retrieval
+path, and neither of which is on V0's route:
+
+* a remasking-capable variant, so low-confidence commits can be reconsidered;
+* uniform-state (rather than absorbing-state) diffusion, where every position
+  stays revisable throughout.
+
+If the Phase 3 ablation shows refreshing buys little, this is the first thing
+to check before concluding that re-querying does not help: the retrieval may
+be improving while the sampler is unable to act on it.

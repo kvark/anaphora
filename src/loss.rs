@@ -34,6 +34,24 @@
 //!   loss and, since `S = 0`, no gradient;
 //! * the kernel's own division by its row count supplies the `1/n`.
 //!
+//! # One deviation from MDLM's parameterisation
+//!
+//! MDLM zeroes the model's probability of emitting `[MASK]` in the
+//! parameterisation itself (the "SUBS" trick), so the mask token is outside
+//! the softmax denominator during training. This objective does not: it uses
+//! Meganeura's cross-entropy over the whole vocabulary.
+//!
+//! The targets are always real tokens, so nothing here ever *rewards*
+//! predicting `[MASK]`. What differs is the normalisation — a little
+//! probability mass is reserved for a token that is never correct, which
+//! slightly loosens the bound rather than biasing it. Sampling takes the
+//! restriction seriously, since there it is the difference between a sample
+//! and a stuck sequence: see [`crate::sample::unmask_top_confidence`].
+//!
+//! Closing the gap on the training side needs a cross-entropy that can
+//! exclude one column, which is the same Meganeura-side change as the
+//! indexed-label kernel below and worth doing at the same time.
+//!
 //! # Cost
 //!
 //! The labels tensor is dense `[n, vocab]` f32, because that is the operator's
